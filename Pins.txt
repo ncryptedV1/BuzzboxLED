@@ -1,0 +1,10 @@
+Analog:
+audio-signal
+dimmer-poti
+
+Digital:
+double-strip-data
+bottom-strip-data
+mode-change-button
+strobe-button
+10x leds
