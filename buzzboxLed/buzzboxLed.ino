@@ -5,34 +5,36 @@
 
 // CONFIG //
 // MODE config
-#define MODE_BUTTON_PIN 32
-const unsigned int MODE_COUNT = 10; // can't be initialized automatically, as MODES can only be initialized after setup (for respective functions to be available)
-const unsigned int MODE_LED_PINS[] = {18, 5, 4, 2, 15, 34, 19, 21, 22, 23};
+#define MODE_BUTTON_PIN 4
+#define MODE_COUNT 10 // can't be initialized automatically, as MODES can only be initialized after setup (for respective functions to be available)
+#define MODE_STRIP_DATA_PIN 27
 
 // DIMMER config
-#define DIM_POTI_PIN 35
+#define DIM_POTI_PIN 32
 
 // DOUBLE-STRIP config
 #define D_STRIP_NUM_LEDS 72
-#define D_STRIP_DATA_PIN 33
-#define FRAMES_PER_SECOND 1000
+#define D_STRIP_DATA_PIN 25
+#define FRAMES_PER_SECOND 1000c
 
 // BOTTOM-STRIP config
 #define B_STRIP_NUM_LEDS 101 // different strip led counts have to differ, as they're used for identification
-#define B_STRIP_DATA_PIN 25
+#define B_STRIP_DATA_PIN 26
 #define B_STRIP_OFFSET 5
 
 // STROBE config
-#define STROBE_BUTTON_PIN 26
+#define STROBE_BUTTON_PIN 15
 #define STROBE_MODE 5
 
 // AUDIO config
-#define AUDIO_PIN 13
+#define AUDIO_PIN 33
 
 // STATE vars
+CLEDController *controllers[3]; // controller references: 0-mode, 1-double_strip, 2-bottom_strip
+CRGB modeStripLeds[MODE_COUNT];
 CRGB dStripLeds[D_STRIP_NUM_LEDS];
 CRGB bStripLeds[B_STRIP_NUM_LEDS];
-unsigned int curMode = -1; // synced (explicit mode may be different, but id is equal)
+unsigned int curMode = -1; // synced between strips (id is equal, explicit mode may be different - see mode definitions per strip)
 int stripBrightness = 50; // 0-255 | also synced
 bool modeChangeOccurred = false;
 int audioRaw = 0;
@@ -50,27 +52,28 @@ void setup() {
 
   // MODE
   pinMode(MODE_BUTTON_PIN, INPUT_PULLUP);
-  for (int idx = 0; idx < MODE_COUNT; idx++) {
-    pinMode(MODE_LED_PINS[idx], OUTPUT);
-  }
-  setMode(0); // IMPORTANT, as default mode is -1 (to trigger initial LED turn on)
+  controllers[0] = &FastLED.addLeds<WS2812B, MODE_STRIP_DATA_PIN, GRB>(modeStripLeds, MODE_COUNT)
+  .setDither(true)
+  .setCorrection(TypicalLEDStrip); // https://forum.arduino.cc/t/fastled-what-does-setcorrection-typicalledstrip-do/621342/3
 
   // DIMMER
   pinMode(DIM_POTI_PIN, INPUT); // not necessary, but explicitly clear
 
   // D-STRIP
-  FastLED.addLeds<WS2812B, D_STRIP_DATA_PIN, GRB>(dStripLeds, D_STRIP_NUM_LEDS)
-  .setDither(true)
-  .setCorrection(TypicalLEDStrip); // https://forum.arduino.cc/t/fastled-what-does-setcorrection-typicalledstrip-do/621342/3
-
-  // B-STRIP
-  FastLED.addLeds<WS2812B, B_STRIP_DATA_PIN, GRB>(bStripLeds, B_STRIP_NUM_LEDS)
+  controllers[1] = &FastLED.addLeds<WS2812B, D_STRIP_DATA_PIN, GRB>(dStripLeds, D_STRIP_NUM_LEDS)
   .setDither(true)
   .setCorrection(TypicalLEDStrip);
-  FastLED.setBrightness(stripBrightness);
-  FastLED.clear();
-  FastLED.show();
 
+  // B-STRIP
+  controllers[2] = &FastLED.addLeds<WS2812B, B_STRIP_DATA_PIN, GRB>(bStripLeds, B_STRIP_NUM_LEDS)
+  .setDither(true)
+  .setCorrection(TypicalLEDStrip);
+
+  // INIT LEDs
+  FastLED.clear();
+  setMode(0); // IMPORTANT, as default mode is -1 (to trigger initial LED turn on)
+  showLeds();
+  
   // STROBE
   pinMode(STROBE_BUTTON_PIN, INPUT_PULLUP);
 
@@ -84,11 +87,24 @@ SimplePatternList D_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, vis
 SimplePatternList B_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, visualizerLoop, strobeLoop, fireBottomLoop, bpmLoop, cycleLoop, redBlueLoop};
 
 void loop() {
+  // update LED arrays
   D_MODES[curMode](dStripLeds, D_STRIP_NUM_LEDS);
   B_MODES[curMode](bStripLeds, B_STRIP_NUM_LEDS);
-  modeChangeOccurred = false; // reset here to enable state resetting for both strips
+  displayMode();
+  // show updated arrays on strips
+  showLeds();
+
+  // reset here to enable state resetting for both strips (aka don't reset before current mode function for both strips has been executed)
+  modeChangeOccurred = false;
+  
   // insert a delay to keep the framerate modest
   FastLED.delay(1000 / FRAMES_PER_SECOND / 2); // divide per amount of strips
+}
+
+void showLeds() {
+  controllers[0]->showLeds(255);
+  controllers[1]->showLeds(stripBrightness);
+  controllers[2]->showLeds(stripBrightness);
 }
 
 bool nonBlockingTasks() {
@@ -115,6 +131,7 @@ bool nonBlockingTasks() {
   audioScaled = audioRaw*audioScaledMax/audioRawMax;
 
   if(audioScaled > audioScaledSens) {
+    Serial.print("Audio-In: ");
     Serial.print(audioScaled);
     Serial.print("/");
     Serial.print(audioScaledMax);
@@ -162,6 +179,8 @@ void checkModeButton() {
           nextMode = (nextMode + 1) % MODE_COUNT;
         }
         setMode(nextMode);
+        Serial.print("New mode: ");
+        Serial.println(nextMode);
       }
     }
   }
@@ -173,27 +192,27 @@ void setMode(unsigned int newMode) {
   if(newMode == curMode) {
     return;
   }
-  
-  for (int idx = 0; idx < MODE_COUNT; idx++) {
-    if (idx == newMode) {
-      Serial.print("Switched to mode ");
-      Serial.println(idx);
-      digitalWrite(MODE_LED_PINS[idx % ARRAY_SIZE(MODE_LED_PINS)], HIGH);
-      continue;
-    }
-    if (idx % ARRAY_SIZE(MODE_LED_PINS) != newMode % ARRAY_SIZE(MODE_LED_PINS)) {
-      digitalWrite(MODE_LED_PINS[idx], LOW);
-    }
-  }
+
   curMode = newMode;
+  
+  Serial.print("Switched to mode ");
+  Serial.println(newMode);
+
   modeChangeOccurred = true;
+}
+
+void displayMode() {
+  for (int idx = 0; idx < MODE_COUNT; idx++) {
+    modeStripLeds[idx] = CRGB::Black;
+  }
+  modeStripLeds[curMode] = CRGB::White;
 }
 
 // DIMMER functions
 void checkDimPoti() {
   int val = analogRead(DIM_POTI_PIN);
   val = map(val, 0, 4095, 0, 255);
-  FastLED.setBrightness(val);
+  stripBrightness = val;
 }
 
 // STROBE functions
@@ -221,9 +240,11 @@ void checkStrobeButton() {
         // activate strobe mode
         strobePrevMode = curMode;
         setMode(STROBE_MODE);
+        Serial.println("Strobe: activated");
       } else {
         // return to previous mode
         setMode(strobePrevMode);
+        Serial.println("Strobe: deactivated");
       }
     }
   }
@@ -425,8 +446,6 @@ void prideLoop(CRGB *leds, int numLeds)
     nblend(leds[pixelnumber], newcolor, 64);
   }
 
-  FastLED.show();
-
   // update state maps
   pridePseudotime[numLeds] = pseudotime;
   prideLastMillis[numLeds] = lastMillis;
@@ -494,7 +513,7 @@ void cylonLoop(CRGB *leds, int numLeds) {
     // Set the i'th led to red (adapted to offset)
     leds[realIdx] = CHSV(hue++, 255, 255);
     // Show the leds
-    FastLED.show();
+    // FastLED.show(); // commenting this out might require everything that alters the LED array after this point to be moved to the method start
     // now that we've shown the leds, reset the i'th led to black
     // leds[i] = CRGB::Black;
     cylonFadeall(leds, numLeds);
@@ -507,7 +526,7 @@ void cylonLoop(CRGB *leds, int numLeds) {
     // Set the i'th led to red (adapted to offset)
     leds[realIdx] = CHSV(hue++, 255, 255);
     // Show the leds
-    FastLED.show();
+    // FastLED.show(); // commenting this out might require everything that alters the LED array after this point to be moved to the method start
     // now that we've shown the leds, reset the i'th led to black
     // leds[i] = CRGB::Black;
     cylonFadeall(leds, numLeds);
@@ -866,7 +885,6 @@ void visualizerRainbow(CRGB *leds, int numLeds, int react, int wheelPos)
         leds[i%numLeds] = CRGB(0, 0, 0);
     }
   }
-  FastLED.show();
 }
 // VISUALIZER END //
 
@@ -876,14 +894,12 @@ void setLed(CRGB *leds, int numLeds, int startIdx, int endIdx, const struct CRGB
     for (int idx = startIdx; idx < endIdx; idx++) {
       leds[idx] = color;
     }
-    return;
+  } else {
+    for (int idx = startIdx; idx < numLeds; idx++) {
+      leds[idx] = color;
+    }
+    for(int idx = 0; idx < endIdx-numLeds; idx++) {
+      leds[idx] = color;
+    }
   }
-  
-  for (int idx = startIdx; idx < numLeds; idx++) {
-    leds[idx] = color;
-  }
-  for(int idx = 0; idx < endIdx-numLeds; idx++) {
-    leds[idx] = color;
-  }
-  FastLED.show();
 }
