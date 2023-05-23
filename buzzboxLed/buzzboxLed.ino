@@ -5,7 +5,7 @@
 
 // CONFIG //
 // MODE config
-#define MODE_BUTTON_PIN 4
+#define MODE_BUTTON_PIN 13
 #define MODE_COUNT 10 // can't be initialized automatically, as MODES can only be initialized after setup (for respective functions to be available)
 #define MODE_STRIP_DATA_PIN 27
 
@@ -15,16 +15,16 @@
 // DOUBLE-STRIP config
 #define D_STRIP_NUM_LEDS 72
 #define D_STRIP_DATA_PIN 25
-#define FRAMES_PER_SECOND 1000c
+#define FRAMES_PER_SECOND 1000
 
 // BOTTOM-STRIP config
-#define B_STRIP_NUM_LEDS 101 // different strip led counts have to differ, as they're used for identification
+#define B_STRIP_NUM_LEDS 204 // different strip led counts have to differ, as they're used for identification (mainly in loop state maps)
 #define B_STRIP_DATA_PIN 26
-#define B_STRIP_OFFSET 5
+#define B_STRIP_OFFSET 19 // TODO: implement
 
 // STROBE config
-#define STROBE_BUTTON_PIN 15
-#define STROBE_MODE 5
+#define STROBE_BUTTON_PIN 14
+#define STROBE_MODE 9
 
 // AUDIO config
 #define AUDIO_PIN 33
@@ -83,8 +83,11 @@ void setup() {
 
 // modes list has to be initialized after setup, for functions to be present in scope
 typedef void (*SimplePatternList[])(CRGB*, int);
-SimplePatternList D_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, visualizerLoop, strobeLoop, fireLoop, bpmLoop, cycleLoop, redBlueLoop};
-SimplePatternList B_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, visualizerLoop, strobeLoop, fireBottomLoop, bpmLoop, cycleLoop, redBlueLoop};
+// SimplePatternList D_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, visualizerLoop, strobeLoop, fireLoop, bpmLoop, cycleLoop, redBlueLoop};
+// SimplePatternList B_MODES = {rainbowLoop, cylonLoop, prideLoop, sinelonLoop, visualizerLoop, strobeLoop, fireBottomLoop, bpmLoop, cycleLoop, redBlueLoop};
+// 1. col (left): visualizer, sinelon, trippy rainbow, cylon, rainbow | 2. col (right): redblue, cycle, bpm, fire, strobe
+SimplePatternList D_MODES = {visualizerLoop, sinelonLoop, prideLoop, cylonLoop, rainbowLoop, redBlueLoop, cycleLoop, bpmLoop, fireLoop, strobeLoop};
+SimplePatternList B_MODES = {visualizerLoop, sinelonLoop, prideLoop, cylonLoop, rainbowLoop, redBlueLoop, cycleLoop, bpmLoop, fireBottomLoop, strobeLoop};
 
 void loop() {
   // update LED arrays
@@ -98,13 +101,15 @@ void loop() {
   modeChangeOccurred = false;
   
   // insert a delay to keep the framerate modest
-  FastLED.delay(1000 / FRAMES_PER_SECOND / 2); // divide per amount of strips
+  FastLED.delay(1000.0 / FRAMES_PER_SECOND / 2); // divide per amount of strips
 }
 
 void showLeds() {
-  controllers[0]->showLeds(255);
-  controllers[1]->showLeds(stripBrightness);
-  controllers[2]->showLeds(stripBrightness);
+  FastLED.show();
+  FastLED.setBrightness(stripBrightness);
+  // controllers[0]->showLeds(255);
+  // controllers[1]->showLeds(stripBrightness);  // somehow setting this brightness bugs in lower ranges (sub ~200 and does never go dark)
+  // controllers[2]->showLeds(stripBrightness);
 }
 
 bool nonBlockingTasks() {
@@ -210,9 +215,10 @@ void displayMode() {
 
 // DIMMER functions
 void checkDimPoti() {
-  int val = analogRead(DIM_POTI_PIN);
-  val = map(val, 0, 4095, 0, 255);
-  stripBrightness = val;
+  int value = analogRead(DIM_POTI_PIN);
+  value = map(value, 0, 4095, 0, 255);
+  value = 255 - value; // poti is built in reversed
+  stripBrightness = value;
 }
 
 // STROBE functions
@@ -258,23 +264,26 @@ void checkStrobeButton() {
 // name main function "<smth>Loop"
 // add params "CRGB *leds, int numLeds"
 // call "nonBlockingTasks"-func somewhere where it's regularly called (e.g. in computationally intensive loops)
+const unsigned int MAIN_NUM_LEDS = D_STRIP_NUM_LEDS;
 
 // CYCLE //
 int cycleMinPause = 50;
-// state maps for different strips
-std::map<int, int> cycleLastTime = {{D_STRIP_NUM_LEDS, 0}, {B_STRIP_NUM_LEDS, 0}};
-std::map<int, int> cycleState = {{D_STRIP_NUM_LEDS, 0}, {B_STRIP_NUM_LEDS, 0}};
+// state - only updated for strip with MAIN_NUM_LEDS LED count
+int cycleLastTime = 0;
+int cycleState = 0;
 
 void cycleLoop(CRGB *leds, int numLeds) {
-  int state = cycleState[numLeds];
-  int lastTime  = cycleLastTime[numLeds];
-  
-  if(audioScaled > audioScaledSens && millis() - lastTime > cycleMinPause) { // advance, if signal threshold is met and min pause has passed
-    lastTime = millis();
-    state = (state + 1) % 6;
-  } else if(millis() - lastTime > cycleMinPause*3) { // skip black during silent parts (during 3x min pause no changes)
-    if(state % 2 == 1) {
+  int state = cycleState;
+  int lastTime  = cycleLastTime;
+
+  if(numLeds == MAIN_NUM_LEDS) { // only adapt state when running for main strip
+    if(audioScaled > audioScaledSens && millis() - lastTime > cycleMinPause) { // advance, if signal threshold is met and min pause has passed
+      lastTime = millis();
       state = (state + 1) % 6;
+    } else if(millis() - lastTime > cycleMinPause*3) { // skip black during silent parts (during 3x min pause no changes)
+      if(state % 2 == 1) {
+        state = (state + 1) % 6;
+      }
     }
   }
   
@@ -291,13 +300,13 @@ void cycleLoop(CRGB *leds, int numLeds) {
   setLed(leds, numLeds, 0, numLeds, color);
 
   // update state maps
-  cycleLastTime[numLeds] = lastTime;
-  cycleState[numLeds] = state;
+  cycleLastTime = lastTime;
+  cycleState = state;
 
   // run other periodic tasks, that require non-blocking execution
   if(nonBlockingTasks()) {
-    cycleLastTime[numLeds] = 0;
-    cycleState[numLeds] = 0;
+    cycleLastTime = 0;
+    cycleState = 0;
     return;
   }
 }
@@ -306,33 +315,34 @@ void cycleLoop(CRGB *leds, int numLeds) {
 // REDBLUE //
 int rbMinPause = 150;
 std::map<int, int> rbOffset = {{D_STRIP_NUM_LEDS, 0}, {B_STRIP_NUM_LEDS, 5}};
-// state maps
-std::map<int, bool> rbState = {{D_STRIP_NUM_LEDS, false}, {B_STRIP_NUM_LEDS, false}};
-std::map<int, int> rbLastTime = {{D_STRIP_NUM_LEDS, 0}, {B_STRIP_NUM_LEDS, 0}};
+// state - only updated for strip with MAIN_NUM_LEDS LED count
+bool rbState = false;
+int rbLastTime = 0;
 
 void redBlueLoop(CRGB *leds, int numLeds) {
-  bool state = rbState[numLeds];
-  int lastTime = rbLastTime[numLeds];
+  bool state = rbState;
+  int lastTime = rbLastTime;
   
-  if(audioScaled > audioScaledSens && millis() - lastTime > rbMinPause) {
-    lastTime = millis();
-    state = !state;
-    redBlueSet(leds, numLeds, state);
+  if(numLeds == MAIN_NUM_LEDS) { // only adapt state when running for main strip
+    if(audioScaled > audioScaledSens && millis() - lastTime > rbMinPause) {
+      lastTime = millis();
+      state = !state;
+    }
+    
+    EVERY_N_MILLISECONDS(200) {
+      state = !state;
+    }
   }
-
-  EVERY_N_MILLISECONDS(200) {
-    state = !state;
-    redBlueSet(leds, numLeds, state);
-  }
+  redBlueSet(leds, numLeds, state);
 
   // update state maps
-  rbState[numLeds] = state;
-  rbLastTime[numLeds] = lastTime;
+  rbState = state;
+  rbLastTime = lastTime;
 
   // run other periodic tasks, that require non-blocking execution
   if(nonBlockingTasks()) {
-    rbState[numLeds] = false;
-    rbLastTime[numLeds] = 0;
+    rbState = false;
+    rbLastTime = 0;
     return;
   }
 }
@@ -355,12 +365,14 @@ void redBlueSet(CRGB *leds, int numLeds, int state) {
 // REDBLUE END //
 
 // STROBE //
-// state maps
-std::map<int, int> strobeState = {{D_STRIP_NUM_LEDS, 0}, {B_STRIP_NUM_LEDS, 0}};
+// state - only updated for strip with MAIN_NUM_LEDS LED count
+int strobeState = 0;
 void strobeLoop(CRGB *leds, int numLeds) {
-  int state = strobeState[numLeds];
+  int state = strobeState;
   EVERY_N_MILLISECONDS(5) {
-    state = (state + 1) % 8;
+    if(numLeds == MAIN_NUM_LEDS) { // only adapt state when running for main strip
+      state = (state + 1) % 8;
+    }
 
     if (state == 0) {
       setLed(leds, numLeds, 0, numLeds, CRGB::White);
@@ -370,11 +382,11 @@ void strobeLoop(CRGB *leds, int numLeds) {
   }
 
   // update state maps
-  strobeState[numLeds] = state;
+  strobeState = state;
 
   // run other periodic tasks, that require non-blocking execution
   if(nonBlockingTasks()) {
-    strobeState[numLeds] = 0;
+    strobeState = 0;
     return;
   }
 }
@@ -513,7 +525,7 @@ void cylonLoop(CRGB *leds, int numLeds) {
     // Set the i'th led to red (adapted to offset)
     leds[realIdx] = CHSV(hue++, 255, 255);
     // Show the leds
-    // FastLED.show(); // commenting this out might require everything that alters the LED array after this point to be moved to the method start
+    // FastLED.show(); // BUG-PRONE: commenting this out might require everything that alters the LED array after this point to be moved to the method start
     // now that we've shown the leds, reset the i'th led to black
     // leds[i] = CRGB::Black;
     cylonFadeall(leds, numLeds);
@@ -526,7 +538,7 @@ void cylonLoop(CRGB *leds, int numLeds) {
     // Set the i'th led to red (adapted to offset)
     leds[realIdx] = CHSV(hue++, 255, 255);
     // Show the leds
-    // FastLED.show(); // commenting this out might require everything that alters the LED array after this point to be moved to the method start
+    // FastLED.show(); // BUG-PRONE: commenting this out might require everything that alters the LED array after this point to be moved to the method start
     // now that we've shown the leds, reset the i'th led to black
     // leds[i] = CRGB::Black;
     cylonFadeall(leds, numLeds);
@@ -763,7 +775,8 @@ void fireLoop(CRGB *leds, int numLeds)
 }
 
 void fireBottomLoop(CRGB *leds, int numLeds) {
-  setLed(leds, numLeds, 0, numLeds, dStripLeds[62]);
+  int colorIdx = (int) D_STRIP_NUM_LEDS * 0.86;
+  setLed(leds, numLeds, 0, numLeds, dStripLeds[colorIdx]);
 }
 // FIRE2012 END //
 
